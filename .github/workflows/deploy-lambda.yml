@@ -1,8 +1,9 @@
 name: Deploy Lambda — Reminder Dispatcher
 
-# Trigger: changes to the lambda/ directory on main/master, or manual dispatch
+# Trigger: PR merged into main/master (not direct pushes), or manual dispatch
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches:
       - main
       - master
@@ -65,6 +66,8 @@ jobs:
   deploy:
     name: Package & Deploy Lambda
     needs: scan
+    # Only deploy when the PR was actually merged (not just closed)
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment || 'production' }}
 

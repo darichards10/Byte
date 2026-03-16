@@ -1,14 +1,12 @@
 name: Deploy Infrastructure — CloudFormation Stacks
 
-# Trigger: changes to the infra/ directory on main/master, or manual dispatch
+# Trigger:
+#   - pull_request opened/updated → validate + security scan only (no deploy)
+#   - pull_request merged into main/master → validate + deploy
+#   - manual dispatch
 on:
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - "infra/**"
   pull_request:
+    types: [opened, synchronize, reopened, closed]
     branches:
       - main
       - master
@@ -109,8 +107,8 @@ jobs:
   deploy:
     name: Deploy CloudFormation
     needs: [validate, iac-scan]
-    # Only deploy on push to default branch or manual trigger (not on PRs)
-    if: github.event_name != 'pull_request'
+    # Only deploy when the PR was actually merged (not just opened/closed), or manual trigger
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment || 'production' }}
 
