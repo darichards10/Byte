@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Byte Bot — CloudWatch alarms and metric filters"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: byte-bot
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: "Optional: email address for crash alerts. Leave blank to skip."
+
+Conditions:
+  CreateAlerts: !Not [!Equals [!Ref AlertEmail, ""]]
+
+Resources:
+  # SNS topic for alerts (only created if AlertEmail is provided)
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Condition: CreateAlerts
+    Properties:
+      TopicName: !Sub "${ProjectName}-alerts"
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  # Alarm: ECS service has 0 running tasks for 5+ minutes (bot crashed)
+  BotDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateAlerts
+    Properties:
+      AlarmName: !Sub "${ProjectName}-bot-down"
+      AlarmDescription: "Byte bot has 0 running tasks — may have crashed"
+      Namespace: AWS/ECS
+      MetricName: RunningTaskCount
+      Dimensions:
+        - Name: ClusterName
+          Value: byte-cluster
+        - Name: ServiceName
+          Value: byte-bot-service
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+  # Metric filter: count ERROR log lines from the bot
+  ErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: /ecs/byte
+      FilterPattern: "[timestamp, level=ERROR, ...]"
+      MetricTransformations:
+        - MetricNamespace: !Sub "${ProjectName}/Logs"
+          MetricName: ErrorCount
+          MetricValue: "1"
+          DefaultValue: 0
+
+  ErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateAlerts
+    Properties:
+      AlarmName: !Sub "${ProjectName}-high-error-rate"
+      AlarmDescription: "Byte bot is logging elevated errors"
+      Namespace: !Sub "${ProjectName}/Logs"
+      MetricName: ErrorCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !If [CreateAlerts, !Ref AlertTopic, !Ref AWS::NoValue]

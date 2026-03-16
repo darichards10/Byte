@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Byte Bot — Master nested stack"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: byte-bot
+  ImageUri:
+    Type: String
+    Description: "ECR image URI for the Fargate task (set after first docker push)"
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: "Optional email for crash alerts"
+  TemplatesBucketUrl:
+    Type: String
+    Description: "S3 URL prefix where nested templates are stored, e.g. https://s3.amazonaws.com/my-bucket/byte-bot"
+
+Resources:
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "${TemplatesBucketUrl}/00-vpc.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+
+  ECRStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "${TemplatesBucketUrl}/01-ecr.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+
+  DynamoDBStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "${TemplatesBucketUrl}/02-dynamodb.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+
+  IAMStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: DynamoDBStack
+    Properties:
+      TemplateURL: !Sub "${TemplatesBucketUrl}/03-iam.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+
+  ECSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - VPCStack
+      - ECRStack
+      - IAMStack
+    Properties:
+      TemplateURL: !Sub "${TemplatesBucketUrl}/04-ecs.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        ImageUri: !Ref ImageUri
+
+  CloudWatchStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ECSStack
+    Properties:
+      TemplateURL: !Sub "${TemplatesBucketUrl}/05-cloudwatch.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        AlertEmail: !Ref AlertEmail
+
+  LambdaStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: IAMStack
+    Properties:
+      TemplateURL: !Sub "${TemplatesBucketUrl}/06-lambda.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
