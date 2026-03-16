@@ -1,0 +1,214 @@
+name: CI — Tests & Security Scanning
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  # ──────────────────────────────────────────────
+  # 1. Unit & integration tests
+  # ──────────────────────────────────────────────
+  test:
+    name: Run Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        env:
+          ENVIRONMENT: test
+          AWS_DEFAULT_REGION: us-east-1
+          # Moto intercepts all AWS calls; dummy values are intentional
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+          DISCORD_TOKEN: testing
+          CLAUDE_API_KEY: testing
+        run: |
+          pytest tests/ \
+            --tb=short \
+            --cov=bot \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  # ──────────────────────────────────────────────
+  # 2. Static security analysis — Python (Bandit)
+  # ──────────────────────────────────────────────
+  bandit:
+    name: Security Scan — Bandit (SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Bandit
+        run: pip install bandit[toml]
+
+      - name: Run Bandit
+        run: |
+          bandit -r bot/ lambda/ \
+            -f json \
+            -o bandit-report.json \
+            --severity-level medium \
+            --confidence-level medium \
+            || true   # collect report even on findings
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+      # Fail the step if HIGH severity findings are present
+      - name: Fail on high-severity findings
+        run: |
+          bandit -r bot/ lambda/ \
+            --severity-level high \
+            --confidence-level high \
+            -f txt
+
+  # ──────────────────────────────────────────────
+  # 3. Dependency vulnerability scan (Safety)
+  # ──────────────────────────────────────────────
+  safety:
+    name: Security Scan — Safety (Dependency CVEs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Safety
+        run: pip install safety
+
+      - name: Scan requirements
+        run: |
+          safety check \
+            -r requirements.txt \
+            -r requirements-dev.txt \
+            --output json \
+            --save-json safety-report.json \
+            || true   # collect report even on findings
+
+      - name: Upload Safety report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: safety-report
+          path: safety-report.json
+
+      # Fail on critical vulnerabilities
+      - name: Fail on critical CVEs
+        run: |
+          safety check \
+            -r requirements.txt \
+            --policy-file .safety-policy.yml \
+            || safety check -r requirements.txt --severity critical
+
+  # ──────────────────────────────────────────────
+  # 4. Container image scan (Trivy)
+  # ──────────────────────────────────────────────
+  trivy:
+    name: Security Scan — Trivy (Container & FS)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image for scanning
+        run: docker build -t byte-bot:scan .
+
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: byte-bot:scan
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Upload Trivy image results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-container
+
+      - name: Scan filesystem / IaC with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0"   # informational for IaC
+
+      - name: Upload Trivy FS results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-filesystem
+
+  # ──────────────────────────────────────────────
+  # 5. CloudFormation template lint (cfn-lint)
+  # ──────────────────────────────────────────────
+  cfn-lint:
+    name: Lint — CloudFormation Templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint CloudFormation templates
+        run: cfn-lint infra/*.yaml

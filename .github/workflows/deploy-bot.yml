@@ -1,0 +1,139 @@
+name: Deploy Bot — Build & Push to ECR, Update ECS
+
+# Trigger: push to main/master, or manual dispatch
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "bot/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "requirements.txt"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - staging
+
+# Prevent simultaneous deploys to the same environment
+concurrency:
+  group: deploy-bot-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1          # TODO: update to your region
+  ECR_REPOSITORY: byte-bot        # TODO: must match 01-ecr.yaml repository name
+  ECS_CLUSTER: ByteBot-Cluster    # TODO: must match 04-ecs.yaml cluster name
+  ECS_SERVICE: ByteBot-Service    # TODO: must match 04-ecs.yaml service name
+  CONTAINER_NAME: byte-bot        # TODO: must match container name in task definition
+
+jobs:
+  # ──────────────────────────────────────────────
+  # 1. Run tests before building (fail fast)
+  # ──────────────────────────────────────────────
+  test:
+    name: Pre-deploy Tests
+    uses: ./.github/workflows/ci.yml
+
+  # ──────────────────────────────────────────────
+  # 2. Build Docker image, push to ECR, deploy ECS
+  # ──────────────────────────────────────────────
+  build-and-deploy:
+    name: Build → ECR → ECS
+    needs: test
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+
+    # Outputs so downstream jobs can reference the image URI
+    outputs:
+      image: ${{ steps.build-push.outputs.image }}
+
+    permissions:
+      id-token: write   # Required for OIDC authentication
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Use OIDC (preferred) — requires an IAM role configured for GitHub OIDC.
+      # As an alternative, set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY as secrets.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          IMAGE_URI="${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}"
+          SHORT_SHA="${GITHUB_SHA::8}"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "full=${IMAGE_URI}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push Docker image to ECR
+        id: build-push
+        run: |
+          docker build \
+            --cache-from "${{ steps.meta.outputs.image_uri }}:latest" \
+            --build-arg BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            -t "${{ steps.meta.outputs.full }}" \
+            -t "${{ steps.meta.outputs.image_uri }}:latest" \
+            .
+          docker push "${{ steps.meta.outputs.full }}"
+          docker push "${{ steps.meta.outputs.image_uri }}:latest"
+          echo "image=${{ steps.meta.outputs.full }}" >> "$GITHUB_OUTPUT"
+
+      - name: Scan pushed image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.meta.outputs.full }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Download current ECS task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_SERVICE }} \
+            --query taskDefinition \
+            > task-definition.json
+
+      - name: Inject new image into task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-push.outputs.image }}
+
+      - name: Deploy new task definition to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Deployment summary
+        run: |
+          echo "### Bot Deployment Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image:** \`${{ steps.build-push.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Cluster:** \`${{ env.ECS_CLUSTER }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Service:** \`${{ env.ECS_SERVICE }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"

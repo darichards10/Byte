@@ -1,0 +1,214 @@
+name: Deploy Infrastructure — CloudFormation Stacks
+
+# Trigger: changes to the infra/ directory on main/master, or manual dispatch
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "infra/**"
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - "infra/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - staging
+      stack:
+        description: "Stack to deploy (leave blank for all)"
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-infra-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1            # TODO: update to your region
+  STACK_PREFIX: ByteBot             # TODO: prefix used for all CloudFormation stack names
+  INFRA_DIR: infra
+  S3_CFN_BUCKET: ${{ secrets.CFN_TEMPLATE_BUCKET }}  # S3 bucket for nested stack templates
+
+jobs:
+  # ──────────────────────────────────────────────
+  # 1. Lint & validate CloudFormation templates
+  # ──────────────────────────────────────────────
+  validate:
+    name: Validate CloudFormation Templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint all templates
+        run: cfn-lint ${{ env.INFRA_DIR }}/*.yaml
+
+      - name: Configure AWS credentials for validation (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: AWS CloudFormation validate-template
+        run: |
+          for template in ${{ env.INFRA_DIR }}/*.yaml; do
+            echo "Validating: $template"
+            aws cloudformation validate-template \
+              --template-body file://"$template"
+          done
+
+  # ──────────────────────────────────────────────
+  # 2. Security scan — CloudFormation (cfn-nag / Trivy IaC)
+  # ──────────────────────────────────────────────
+  iac-scan:
+    name: Security Scan — IaC (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Scan CloudFormation templates with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: ${{ env.INFRA_DIR }}
+          format: sarif
+          output: trivy-iac.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+
+      - name: Upload IaC scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-iac.sarif
+          category: trivy-iac
+
+  # ──────────────────────────────────────────────
+  # 3. Deploy stacks (only on push to main/master or manual dispatch)
+  # ──────────────────────────────────────────────
+  deploy:
+    name: Deploy CloudFormation
+    needs: [validate, iac-scan]
+    # Only deploy on push to default branch or manual trigger (not on PRs)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Upload nested templates to S3 so CloudFormation can reference them
+      - name: Upload templates to S3
+        run: |
+          aws s3 sync ${{ env.INFRA_DIR }}/ \
+            s3://${{ env.S3_CFN_BUCKET }}/cloudformation/ \
+            --exclude "*" \
+            --include "*.yaml"
+
+      # Deploy each stack in order; skip if a specific stack was requested
+      - name: Deploy 00 — VPC
+        if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '00-vpc' }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${{ env.STACK_PREFIX }}-VPC \
+            --template-file ${{ env.INFRA_DIR }}/00-vpc.yaml \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy 01 — ECR
+        if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '01-ecr' }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${{ env.STACK_PREFIX }}-ECR \
+            --template-file ${{ env.INFRA_DIR }}/01-ecr.yaml \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy 02 — DynamoDB
+        if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '02-dynamodb' }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${{ env.STACK_PREFIX }}-DynamoDB \
+            --template-file ${{ env.INFRA_DIR }}/02-dynamodb.yaml \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy 03 — IAM
+        if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '03-iam' }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${{ env.STACK_PREFIX }}-IAM \
+            --template-file ${{ env.INFRA_DIR }}/03-iam.yaml \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy 04 — ECS
+        if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '04-ecs' }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${{ env.STACK_PREFIX }}-ECS \
+            --template-file ${{ env.INFRA_DIR }}/04-ecs.yaml \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy 05 — CloudWatch
+        if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '05-cloudwatch' }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${{ env.STACK_PREFIX }}-CloudWatch \
+            --template-file ${{ env.INFRA_DIR }}/05-cloudwatch.yaml \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy 06 — Lambda
+        if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '06-lambda' }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${{ env.STACK_PREFIX }}-Lambda \
+            --template-file ${{ env.INFRA_DIR }}/06-lambda.yaml \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deployment summary
+        run: |
+          echo "### Infrastructure Deployment Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Region:** \`${{ env.AWS_REGION }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Stack prefix:** \`${{ env.STACK_PREFIX }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "#### Stack statuses" >> "$GITHUB_STEP_SUMMARY"
+          aws cloudformation list-stacks \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+            --query "StackSummaries[?starts_with(StackName, '${{ env.STACK_PREFIX }}')].{Name: StackName, Status: StackStatus}" \
+            --output table >> "$GITHUB_STEP_SUMMARY" || true

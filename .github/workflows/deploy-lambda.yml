@@ -1,0 +1,134 @@
+name: Deploy Lambda — Reminder Dispatcher
+
+# Trigger: changes to the lambda/ directory on main/master, or manual dispatch
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "lambda/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - staging
+
+concurrency:
+  group: deploy-lambda-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1                        # TODO: update to your region
+  LAMBDA_FUNCTION_NAME: ByteBot-ReminderDispatcher  # TODO: must match 06-lambda.yaml function name
+  LAMBDA_DIR: lambda
+
+jobs:
+  # ──────────────────────────────────────────────
+  # 1. Security scan of Lambda source code
+  # ──────────────────────────────────────────────
+  scan:
+    name: Security Scan — Lambda
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Bandit & Safety
+        run: pip install bandit safety
+
+      - name: Bandit SAST scan
+        run: |
+          bandit -r ${{ env.LAMBDA_DIR }}/ \
+            --severity-level high \
+            --confidence-level high \
+            -f txt
+
+      - name: Safety CVE scan
+        run: |
+          safety check -r ${{ env.LAMBDA_DIR }}/requirements.txt
+
+  # ──────────────────────────────────────────────
+  # 2. Package & deploy Lambda
+  # ──────────────────────────────────────────────
+  deploy:
+    name: Package & Deploy Lambda
+    needs: scan
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Lambda dependencies into package directory
+        run: |
+          pip install \
+            -r ${{ env.LAMBDA_DIR }}/requirements.txt \
+            -t ${{ env.LAMBDA_DIR }}/package/
+
+      - name: Create deployment ZIP
+        run: |
+          cd ${{ env.LAMBDA_DIR }}
+          # Copy source files into package dir and zip everything
+          cp *.py package/
+          cd package
+          zip -r ../../lambda-deployment.zip . -x "*.pyc" -x "*/__pycache__/*"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload deployment package to Lambda
+        id: deploy
+        run: |
+          RESPONSE=$(aws lambda update-function-code \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --zip-file fileb://lambda-deployment.zip \
+            --output json)
+          echo "version=$(echo "$RESPONSE" | jq -r '.Version // "N/A"')" >> "$GITHUB_OUTPUT"
+          echo "function_arn=$(echo "$RESPONSE" | jq -r '.FunctionArn')" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Lambda update to complete
+        run: |
+          aws lambda wait function-updated \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }}
+
+      - name: Publish new Lambda version
+        id: publish
+        run: |
+          VERSION=$(aws lambda publish-version \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --description "Deploy from commit ${GITHUB_SHA::8} via GitHub Actions" \
+            --query 'Version' \
+            --output text)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Deployment summary
+        run: |
+          echo "### Lambda Deployment Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Function:** \`${{ env.LAMBDA_FUNCTION_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** \`${{ steps.publish.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
