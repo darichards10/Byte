@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Byte Bot — Lambda reminder dispatcher + EventBridge weekly trigger"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: byte-bot
+  SSMPrefix:
+    Type: String
+    Default: /byte/prod
+  TableName:
+    Type: String
+    Default: ByteBot
+
+Resources:
+  ReminderDispatcherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-reminder-dispatcher"
+      Runtime: python3.12
+      Handler: reminder_dispatcher.lambda_handler
+      Role: !ImportValue !Sub "${ProjectName}-LambdaRoleArn"
+      Timeout: 60
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          # Placeholder — deploy actual code via scripts/deploy.sh
+          def lambda_handler(event, context):
+              print("Reminder dispatcher placeholder")
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref TableName
+          SSM_PREFIX: !Ref SSMPrefix
+          AWS_REGION_NAME: !Ref AWS::Region
+      LoggingConfig:
+        LogGroup: !Sub "/aws/lambda/${ProjectName}-reminder-dispatcher"
+
+  ReminderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProjectName}-reminder-dispatcher"
+      RetentionInDays: 14
+
+  # Weekly meal plan reminder — every Sunday at 6 PM UTC
+  WeeklyReminderRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-weekly-reminder"
+      Description: "Trigger Byte Bot to send weekly meal plan reminder to users"
+      ScheduleExpression: "cron(0 18 ? * SUN *)"
+      State: ENABLED
+      Targets:
+        - Id: ReminderLambda
+          Arn: !GetAtt ReminderDispatcherFunction.Arn
+          Input: '{"reminder_type": "weekly_meal_plan"}'
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReminderDispatcherFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt WeeklyReminderRule.Arn
+
+Outputs:
+  LambdaFunctionArn:
+    Value: !GetAtt ReminderDispatcherFunction.Arn
+    Export:
+      Name: !Sub "${ProjectName}-LambdaArn"

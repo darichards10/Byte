@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Byte Bot — ECS Fargate cluster, task definition, and service"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: byte-bot
+  ImageUri:
+    Type: String
+    Description: "ECR image URI, e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/byte-bot:latest"
+  SSMPrefix:
+    Type: String
+    Default: /byte/prod
+  TableName:
+    Type: String
+    Default: ByteBot
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: byte-cluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/byte
+      RetentionInDays: 30
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: byte-bot-task
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: "256"      # 0.25 vCPU
+      Memory: "512"   # 0.5 GB
+      TaskRoleArn: !ImportValue !Sub "${ProjectName}-ECSTaskRoleArn"
+      ExecutionRoleArn: !ImportValue !Sub "${ProjectName}-ECSExecutionRoleArn"
+      ContainerDefinitions:
+        - Name: byte-bot
+          Image: !Ref ImageUri
+          Essential: true
+          Environment:
+            - Name: ENVIRONMENT
+              Value: production
+            - Name: DYNAMODB_TABLE
+              Value: !Ref TableName
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: SSM_PREFIX
+              Value: !Ref SSMPrefix
+            - Name: BOT_CHAT_CHANNEL
+              Value: byte-chat
+          Secrets:
+            - Name: DISCORD_TOKEN
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SSMPrefix}/discord_token"
+            - Name: ANTHROPIC_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SSMPrefix}/anthropic_api_key"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/byte
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: byte-bot
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - "python -c 'import bot' || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  FargateService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: byte-bot-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !ImportValue !Sub "${ProjectName}-PublicSubnetId"
+          SecurityGroups:
+            - !ImportValue !Sub "${ProjectName}-FargateSGId"
+      # No load balancer — outbound-only bot
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0   # Allow the single task to be replaced
+        MaximumPercent: 200
+
+Outputs:
+  ClusterName:
+    Value: !Ref ECSCluster
+
+  ServiceName:
+    Value: !GetAtt FargateService.Name
