@@ -42,12 +42,13 @@ class MessageHandler(commands.Cog):
             return
 
         # ── Guard 3: Determine if Byte should respond ────────────────────────
+        # Check cheap conditions first; only hit DynamoDB if neither is true.
         is_mention = self.bot.user in message.mentions
         is_dm = isinstance(message.channel, discord.DMChannel)
-        is_designated = is_bot_chat_channel_by_guild_config(message.channel)
 
-        if not (is_mention or is_dm or is_designated):
-            return
+        if not (is_mention or is_dm):
+            if not is_bot_chat_channel_by_guild_config(message.channel):
+                return
 
         # ── Guard 4: Prevent concurrent calls for the same channel ───────────
         if message.channel.id in _processing:
