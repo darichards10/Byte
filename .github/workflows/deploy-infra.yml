@@ -32,10 +32,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: us-east-1            # TODO: update to your region
-  STACK_PREFIX: ByteBot             # TODO: prefix used for all CloudFormation stack names
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  STACK_PREFIX: ${{ vars.STACK_PREFIX }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
   INFRA_DIR: infra
-  S3_CFN_BUCKET: ${{ secrets.CFN_TEMPLATE_BUCKET }}  # S3 bucket for nested stack templates
+  S3_CFN_BUCKET: ${{ secrets.CFN_TEMPLATE_BUCKET }}
 
 jobs:
   # ──────────────────────────────────────────────
@@ -174,11 +175,14 @@ jobs:
       - name: Deploy 04 — ECS
         if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '04-ecs' }}
         run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest"
           aws cloudformation deploy \
             --stack-name ${{ env.STACK_PREFIX }}-ECS \
             --template-file ${{ env.INFRA_DIR }}/04-ecs.yaml \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "ImageUri=${IMAGE_URI}"
 
       - name: Deploy 05 — CloudWatch
         if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '05-cloudwatch' }}
@@ -187,7 +191,8 @@ jobs:
             --stack-name ${{ env.STACK_PREFIX }}-CloudWatch \
             --template-file ${{ env.INFRA_DIR }}/05-cloudwatch.yaml \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "AlertEmail=${{ vars.ALERT_EMAIL }}"
 
       - name: Deploy 06 — Lambda
         if: ${{ github.event.inputs.stack == '' || github.event.inputs.stack == '06-lambda' }}
