@@ -158,6 +158,8 @@ jobs:
 
       - name: Scan Docker image with Trivy
         uses: aquasecurity/trivy-action@0.30.0
+        continue-on-error: true
+        id: trivy-image
         with:
           image-ref: byte-bot:scan
           format: sarif
@@ -168,10 +170,14 @@ jobs:
 
       - name: Upload Trivy image results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles('trivy-image.sarif') != ''
         with:
           sarif_file: trivy-image.sarif
           category: trivy-container
+
+      - name: Fail if Trivy found critical/high vulnerabilities
+        if: steps.trivy-image.outcome == 'failure'
+        run: exit 1
 
       - name: Scan filesystem / IaC with Trivy
         uses: aquasecurity/trivy-action@0.30.0
@@ -185,7 +191,7 @@ jobs:
 
       - name: Upload Trivy FS results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles('trivy-fs.sarif') != ''
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-filesystem

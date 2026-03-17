@@ -67,7 +67,7 @@ Resources:
   FargateSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "Byte Bot Fargate — outbound HTTPS only"
+      GroupDescription: "Byte Bot Fargate - outbound HTTPS only"
       VpcId: !Ref VPC
       SecurityGroupEgress:
         - IpProtocol: tcp

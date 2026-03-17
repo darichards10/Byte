@@ -39,8 +39,10 @@ Resources:
         - FARGATE
       Cpu: "256"      # 0.25 vCPU
       Memory: "512"   # 0.5 GB
-      TaskRoleArn: !ImportValue !Sub "${ProjectName}-ECSTaskRoleArn"
-      ExecutionRoleArn: !ImportValue !Sub "${ProjectName}-ECSExecutionRoleArn"
+      TaskRoleArn:
+        Fn::ImportValue: !Sub "${ProjectName}-ECSTaskRoleArn"
+      ExecutionRoleArn:
+        Fn::ImportValue: !Sub "${ProjectName}-ECSExecutionRoleArn"
       ContainerDefinitions:
         - Name: byte-bot
           Image: !Ref ImageUri
@@ -88,9 +90,9 @@ Resources:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
           Subnets:
-            - !ImportValue !Sub "${ProjectName}-PublicSubnetId"
+            - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnetId"
           SecurityGroups:
-            - !ImportValue !Sub "${ProjectName}-FargateSGId"
+            - Fn::ImportValue: !Sub "${ProjectName}-FargateSGId"
       # No load balancer — outbound-only bot
       DeploymentConfiguration:
         MinimumHealthyPercent: 0   # Allow the single task to be replaced

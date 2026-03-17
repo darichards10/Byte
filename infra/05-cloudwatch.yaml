@@ -74,4 +74,4 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
       AlarmActions:
-        - !If [CreateAlerts, !Ref AlertTopic, !Ref AWS::NoValue]
+        - !Ref AlertTopic
