@@ -1,0 +1,8 @@
+# Safety policy — fail on CRITICAL vulnerabilities only
+# Docs: https://docs.safetycli.com/safety-docs/safety-policy-files
+version: "3.0"
+
+security:
+  continue-on-vulnerability-error: false
+  ignore-cvss-severity-below: 9.0       # CRITICAL threshold (CVSS >= 9.0)
+  ignore-unpinned-requirements: false
