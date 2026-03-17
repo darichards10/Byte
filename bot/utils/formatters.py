@@ -104,6 +104,48 @@ def recipe_list_embed(recipes: list[dict]) -> discord.Embed:
     return embed
 
 
+def food_log_embed(entries: list[dict]) -> discord.Embed:
+    embed = discord.Embed(
+        title="Your Food Log",
+        color=discord.Color.gold(),
+    )
+    if not entries:
+        embed.description = "No food entries found. Log a meal with `/log_food`!"
+        return embed
+
+    for entry in entries[:10]:
+        date = entry.get("logged_at", "")[:10]
+        meal = entry.get("meal_type", "?").replace("_", " ").title()
+        foods = entry.get("foods", [])
+        foods_text = ", ".join(foods[:5])
+        if len(foods) > 5:
+            foods_text += f" (+{len(foods) - 5} more)"
+
+        macro_parts = []
+        if entry.get("calories") is not None:
+            macro_parts.append(f"{entry['calories']} cal")
+        if entry.get("protein_g") is not None:
+            macro_parts.append(f"P:{entry['protein_g']}g")
+        if entry.get("carbs_g") is not None:
+            macro_parts.append(f"C:{entry['carbs_g']}g")
+        if entry.get("fat_g") is not None:
+            macro_parts.append(f"F:{entry['fat_g']}g")
+
+        field_value_parts = [foods_text]
+        if macro_parts:
+            field_value_parts.append(" · ".join(macro_parts))
+        if entry.get("notes"):
+            field_value_parts.append(f"*{entry['notes']}*")
+        field_value_parts.append(f"ID: `{entry.get('food_id', '?')}`")
+
+        embed.add_field(
+            name=f"{date} — {meal}",
+            value="\n".join(field_value_parts),
+            inline=False,
+        )
+    return embed
+
+
 def workout_list_embed(workouts: list[dict]) -> discord.Embed:
     embed = discord.Embed(
         title="Your Workout History",

@@ -38,6 +38,7 @@ COGS = [
     "bot.cogs.profile",
     "bot.cogs.reminders",
     "bot.cogs.admin",
+    "bot.cogs.food_log",
     "bot.events.message_handler",
     "bot.events.reaction_handler",
 ]

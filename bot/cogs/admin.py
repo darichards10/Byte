@@ -98,6 +98,16 @@ class Admin(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="🥗 Food Log",
+            value=(
+                "`/log_food meal_type: foods: calories: protein: carbs: fat: notes:` — Log a meal\n"
+                "`/my_food_log limit: meal_filter: date:` — View your log\n"
+                "`/delete_food_log food_id:` — Remove an entry\n"
+                "`/nutrition_summary days:` — AI analysis of recent eating"
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="👤 Profile",
             value=(
                 "`/my_profile` · `/set_diet` · `/set_activity`\n"
@@ -131,6 +141,7 @@ class Admin(commands.Cog):
         app_commands.Choice(name="Recipes",       value="recipes"),
         app_commands.Choice(name="Meal Planning", value="meals"),
         app_commands.Choice(name="Workouts",      value="workouts"),
+        app_commands.Choice(name="Food Log",      value="food_log"),
         app_commands.Choice(name="Profile",       value="profile"),
         app_commands.Choice(name="Reminders",     value="reminders"),
         app_commands.Choice(name="Admin / Info",  value="admin"),
@@ -141,12 +152,13 @@ class Admin(commands.Cog):
         category: app_commands.Choice[str],
     ):
         embeds = {
-            "recipes": _embed_recipes(),
-            "meals":   _embed_meals(),
+            "recipes":  _embed_recipes(),
+            "meals":    _embed_meals(),
             "workouts": _embed_workouts(),
-            "profile": _embed_profile(),
+            "food_log": _embed_food_log(),
+            "profile":  _embed_profile(),
             "reminders": _embed_reminders(),
-            "admin":   _embed_admin(),
+            "admin":    _embed_admin(),
         }
         await interaction.response.send_message(
             embed=embeds[category.value], ephemeral=True
@@ -231,6 +243,37 @@ def _embed_workouts() -> discord.Embed:
         "Get an AI analysis of your last 10 workouts.\n"
         "Byte will identify patterns, muscle group gaps, and suggest improvements.\n"
         "No parameters required."
+    ), inline=False)
+    return e
+
+
+def _embed_food_log() -> discord.Embed:
+    e = discord.Embed(title="🥗 Food Log Commands", color=discord.Color.gold())
+    e.add_field(name="/log_food", value=(
+        "Log a meal or food entry.\n"
+        "**Required:** `meal_type` (choice), `foods` — comma-separated food items\n"
+        "**Optional:** `calories`, `protein`, `carbs`, `fat` — integers\n"
+        "**Optional:** `notes` — freeform note, max 200 characters\n"
+        "**Example:** `/log_food meal_type:Lunch foods:\"chicken 200g, rice, salad\" calories:520 protein:45`\n"
+        "All responses are private (ephemeral) — only you can see them."
+    ), inline=False)
+    e.add_field(name="/my_food_log", value=(
+        "View your food log entries.\n"
+        "**Optional:** `limit` — 1–25 entries, defaults to 10\n"
+        "**Optional:** `meal_filter` — filter by meal type\n"
+        "**Optional:** `date` — show only a specific day (YYYY-MM-DD)\n"
+        "**Example:** `/my_food_log date:2026-03-17`"
+    ), inline=False)
+    e.add_field(name="/delete_food_log", value=(
+        "Remove a food log entry by its ID.\n"
+        "**Required:** `food_id` — shown as ID on each `/my_food_log` entry\n"
+        "**Example:** `/delete_food_log food_id:2026-03-17T14:30:00.000000+00:00`"
+    ), inline=False)
+    e.add_field(name="/nutrition_summary", value=(
+        "Get an AI analysis of your recent eating patterns.\n"
+        "**Optional:** `days` — 1–14, defaults to 7\n"
+        "Byte analyses patterns, macro balance, and alignment with your goals.\n"
+        "**Example:** `/nutrition_summary days:7`"
     ), inline=False)
     return e
 

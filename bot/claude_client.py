@@ -24,7 +24,7 @@ You specialize in:
 - Personalized workout planning and fitness advice
 - Grocery list generation from meal plans
 - General nutrition, diet, and health guidance
-- Tracking and remembering favorite recipes and past workouts (via slash commands)
+- Tracking and remembering favorite recipes, past workouts, and food/meal logs (via slash commands)
 
 Formatting rules (important — you live inside Discord):
 - Keep responses under 1900 characters
@@ -35,7 +35,8 @@ Formatting rules (important — you live inside Discord):
 - For recipes: always include ingredients list, brief instructions, and approximate macros per serving
 - For workouts: always include exercise name, sets x reps, and rest time
 
-When a user asks you to "save" something, remind them to use the appropriate slash command (e.g. /save_recipe).
+When a user asks you to "save" something, remind them to use the appropriate slash command (e.g. /save_recipe, /log_food, /log_workout).
+When a user mentions eating something or asks you to log food, remind them to use /log_food.
 Never claim to perform actions you can't do (web browsing, accessing external APIs).
 Be warm, encouraging, and concise.
 """
@@ -222,6 +223,48 @@ class ClaudeClient:
             f"Here are my recent workouts:\n{summary}\n\n"
             f"Give me a brief analysis: patterns you notice, muscle groups I might be neglecting, "
             f"and one concrete suggestion to improve my training. Keep it under 400 words."
+        )
+        response = await self._client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=_build_system_prompt(profile),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text
+
+    async def analyze_food_log(
+        self,
+        entries: list[dict],
+        days: int = 7,
+        profile: dict | None = None,
+    ) -> str:
+        if not entries:
+            return "No food log entries found for the requested period. Start logging with `/log_food`!"
+
+        summary_lines = []
+        for e in entries[:20]:
+            foods = ", ".join(e.get("foods", [])) or "not specified"
+            cal_part = f" — {e['calories']} cal" if e.get("calories") is not None else ""
+            macro_parts = []
+            if e.get("protein_g") is not None:
+                macro_parts.append(f"P:{e['protein_g']}g")
+            if e.get("carbs_g") is not None:
+                macro_parts.append(f"C:{e['carbs_g']}g")
+            if e.get("fat_g") is not None:
+                macro_parts.append(f"F:{e['fat_g']}g")
+            macro_str = " " + " ".join(macro_parts) if macro_parts else ""
+            summary_lines.append(
+                f"- {e.get('logged_at', '')[:10]} {e.get('meal_type', '?')}: "
+                f"{foods}{cal_part}{macro_str}"
+            )
+        summary = "\n".join(summary_lines)
+
+        prompt = (
+            f"Here is my food log for the past {days} day(s):\n{summary}\n\n"
+            f"Please provide a brief nutritional analysis: patterns you notice, "
+            f"any nutrients I might be under- or over-consuming, whether my eating "
+            f"aligns with my fitness goals, and one concrete dietary suggestion. "
+            f"Keep it under 400 words."
         )
         response = await self._client.messages.create(
             model=MODEL,

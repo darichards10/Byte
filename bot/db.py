@@ -8,6 +8,7 @@ Table key patterns:
   USER#<user_id>  WORKOUT#<ISO-ts>               → Workout log entry
   USER#<user_id>  HISTORY#<channel_id>#<ISO-ts>  → Conversation turn (TTL: 7 days)
   USER#<user_id>  REMINDER#<uuid>                → Reminder
+  USER#<user_id>  FOOD#<ISO-ts>                  → Food log entry
   GUILD#<guild_id> CONFIG                         → Guild config (bot-chat channel)
 """
 
@@ -344,6 +345,105 @@ def get_all_active_reminders() -> list[dict]:
 def delete_reminder(user_id: str, reminder_id: str) -> None:
     _get_table().delete_item(
         Key={"PK": f"USER#{user_id}", "SK": f"REMINDER#{reminder_id}"}
+    )
+
+
+# ── Food Log ──────────────────────────────────────────────────────────────────
+
+def log_food_entry(
+    user_id: str,
+    meal_type: str,
+    foods: list[str],
+    calories: int | None = None,
+    protein_g: int | None = None,
+    carbs_g: int | None = None,
+    fat_g: int | None = None,
+    notes: str = "",
+) -> str:
+    """
+    Log a food/meal entry. Returns the ISO timestamp used as the food_id.
+    PK is always USER#{user_id} — cross-user writes are structurally impossible.
+    """
+    ts = _now_iso()
+    table = _get_table()
+    item = {
+        "PK": f"USER#{user_id}",
+        "SK": f"FOOD#{ts}",
+        "food_id": ts,
+        "logged_at": ts,
+        "meal_type": meal_type,
+        "foods": foods,
+        "notes": notes,
+        # GSI always set — enables meal-type filtering via GSI1
+        "gsi1pk": f"USER#{user_id}",
+        "gsi1sk": f"MEAL#{meal_type}#FOOD#{ts}",
+    }
+    if calories is not None:
+        item["calories"] = calories
+    if protein_g is not None:
+        item["protein_g"] = protein_g
+    if carbs_g is not None:
+        item["carbs_g"] = carbs_g
+    if fat_g is not None:
+        item["fat_g"] = fat_g
+    table.put_item(Item=item)
+    return ts
+
+
+def get_food_log(
+    user_id: str,
+    limit: int = 10,
+    meal_type: str | None = None,
+    date: str | None = None,
+) -> list[dict]:
+    """
+    Retrieve food log entries for a user.
+    - meal_type: queries GSI1 to filter by meal type.
+    - date: YYYY-MM-DD string; uses begins_with on SK to return only that day.
+    - If both provided, meal_type takes precedence (GSI path).
+    All paths filter strictly by user_id — no cross-user data is accessible.
+    """
+    table = _get_table()
+    if meal_type:
+        resp = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression=(
+                Key("gsi1pk").eq(f"USER#{user_id}") &
+                Key("gsi1sk").begins_with(f"MEAL#{meal_type}#")
+            ),
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+    elif date:
+        # ISO timestamps start with the date, e.g. "2026-03-17T..."
+        resp = table.query(
+            KeyConditionExpression=(
+                Key("PK").eq(f"USER#{user_id}") &
+                Key("SK").begins_with(f"FOOD#{date}")
+            ),
+            ScanIndexForward=False,
+        )
+    else:
+        resp = table.query(
+            KeyConditionExpression=(
+                Key("PK").eq(f"USER#{user_id}") &
+                Key("SK").begins_with("FOOD#")
+            ),
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+    return resp.get("Items", [])
+
+
+def delete_food_entry(user_id: str, food_id: str) -> None:
+    """
+    Delete a food log entry. Silent no-op if the item does not exist.
+    Security: PK is always USER#{user_id}. Even if food_id belongs to another
+    user, the delete targets only this user's partition — cross-user deletion
+    is structurally impossible.
+    """
+    _get_table().delete_item(
+        Key={"PK": f"USER#{user_id}", "SK": f"FOOD#{food_id}"}
     )
 
 
