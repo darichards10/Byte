@@ -29,11 +29,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: us-east-1          # TODO: update to your region
-  ECR_REPOSITORY: byte-bot        # TODO: must match 01-ecr.yaml repository name
-  ECS_CLUSTER: ByteBot-Cluster    # TODO: must match 04-ecs.yaml cluster name
-  ECS_SERVICE: ByteBot-Service    # TODO: must match 04-ecs.yaml service name
-  CONTAINER_NAME: byte-bot        # TODO: must match container name in task definition
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+  CONTAINER_NAME: ${{ vars.CONTAINER_NAME }}
 
 jobs:
   # ──────────────────────────────────────────────
@@ -102,7 +102,7 @@ jobs:
           echo "image=${{ steps.meta.outputs.full }}" >> "$GITHUB_OUTPUT"
 
       - name: Scan pushed image with Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.30.0
         with:
           image-ref: ${{ steps.meta.outputs.full }}
           format: table

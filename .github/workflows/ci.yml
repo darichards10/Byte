@@ -5,6 +5,7 @@ on:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+  workflow_call:
 
 jobs:
   # ──────────────────────────────────────────────
@@ -125,8 +126,7 @@ jobs:
           safety check \
             -r requirements.txt \
             -r requirements-dev.txt \
-            --output json \
-            --save-json safety-report.json \
+            --json > safety-report.json \
             || true   # collect report even on findings
 
       - name: Upload Safety report
@@ -141,8 +141,7 @@ jobs:
         run: |
           safety check \
             -r requirements.txt \
-            --policy-file .safety-policy.yml \
-            || safety check -r requirements.txt --severity critical
+            --policy-file .safety-policy.yml
 
   # ──────────────────────────────────────────────
   # 4. Container image scan (Trivy)
@@ -158,7 +157,9 @@ jobs:
         run: docker build -t byte-bot:scan .
 
       - name: Scan Docker image with Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.30.0
+        continue-on-error: true
+        id: trivy-image
         with:
           image-ref: byte-bot:scan
           format: sarif
@@ -169,13 +170,17 @@ jobs:
 
       - name: Upload Trivy image results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles('trivy-image.sarif') != ''
         with:
           sarif_file: trivy-image.sarif
           category: trivy-container
 
+      - name: Fail if Trivy found critical/high vulnerabilities
+        if: steps.trivy-image.outcome == 'failure'
+        run: exit 1
+
       - name: Scan filesystem / IaC with Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.30.0
         with:
           scan-type: fs
           scan-ref: .
@@ -186,7 +191,7 @@ jobs:
 
       - name: Upload Trivy FS results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles('trivy-fs.sarif') != ''
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-filesystem

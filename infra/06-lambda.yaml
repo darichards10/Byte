@@ -19,7 +19,8 @@ Resources:
       FunctionName: !Sub "${ProjectName}-reminder-dispatcher"
       Runtime: python3.12
       Handler: reminder_dispatcher.lambda_handler
-      Role: !ImportValue !Sub "${ProjectName}-LambdaRoleArn"
+      Role:
+        Fn::ImportValue: !Sub "${ProjectName}-LambdaRoleArn"
       Timeout: 60
       MemorySize: 128
       Code:
